@@ -1,0 +1,70 @@
+name: desktop-web-dist
+
+# Builds the cad-viewer-example web dist and attaches it to the release for
+# the pushed tag. Consumed by the AUR cad-viewer-bin package.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and attach the dist to (e.g. v1.5.8)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  web-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build web dist
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec nx run @mlightcad/cad-viewer-example:build
+        env:
+          NX_DAEMON: 'false'
+
+      - name: Pack dist
+        run: |
+          VERSION="${{ steps.tag.outputs.tag }}"
+          VERSION="${VERSION#v}"
+          mkdir -p stage
+          cp -r packages/cad-viewer-example/dist stage/web
+          cp LICENSE stage/
+          tar czf "cad-viewer-web-dist-${VERSION}.tar.gz" -C stage web LICENSE
+          sha256sum "cad-viewer-web-dist-${VERSION}.tar.gz"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${TAG#v}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "cad-viewer $TAG web dist (desktop packaging)" \
+              --notes "Prebuilt web dist for the AUR cad-viewer-bin package."
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "cad-viewer-web-dist-${VERSION}.tar.gz"
